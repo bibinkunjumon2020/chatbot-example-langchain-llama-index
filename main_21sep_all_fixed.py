@@ -201,3 +201,202 @@ if __name__ == "__main__":
     # asyncio.run(store_index())  # Called only once to create the index files
     asyncio.run(get_chat_engine())
     chat_app.run(host="0.0.0.0", port=5000, debug=True)
+
+
+
+utils.py
+
+
+
+import logging
+import re
+
+
+# process the response with custin operations
+def check_nature_of_my_response(message_response: str):
+    logging.info(message_response)
+    # replacing the context word
+    message_response = message_response.replace(
+        "context", "botswana government services"
+    )
+    return message_response
+
+
+# handling user prompt to manage locally or sending the openai
+def handle_user_prompt(user_prompt: str):
+    message_response_processed = check_match(user_prompt)
+    if message_response_processed is not None:
+        return message_response_processed, True
+    return message_response_processed, False
+
+
+# perform custom check on string to retuen dictionary value for a key
+def check_match(string_to_check: str):
+    greet_dict = {
+        "hello": "Hello! This is your AI assistant. \nHow can I assist you today?",
+        "hey": "Hello! This is your AI assistant. \nHow can I assist you today?",
+        "hi": "Hello! This is your AI assistant. \nHow can I assist you today?",
+        "good morning": "Good morning! This is your AI assistant. \nHow can I assist you today?",
+        "good afternoon": "Good afternoon! This is your AI assistant. \nHow can I assist you today?",
+        "good evening": "Good evening! This is your AI assistant. \nHow can I assist you today?",
+        "thanks": "I am glad that I could serve you properly.\nPlease let me know if "
+        "there is something else that I can help you with.?",
+        "thank you": "I am glad that I could serve you properly.\nPlease let me know if "
+        "there is something else that I can help you with.?",
+        "welcome": "I am glad that I could serve you properly.\nPlease let me know if "
+        "there is something else that I can help you with.?",
+    }
+    logging.info(string_to_check)
+    string_to_check_lower = string_to_check.lower()
+    for key in greet_dict:
+        # Create a regex pattern to match whole words or phrases
+        pattern = r"\b{}\b".format(re.escape(key.lower()))
+        # Check if the pattern is found in the input string
+        if re.search(pattern, string_to_check_lower):
+            return greet_dict.get(key)
+
+
+
+index_handler.py
+
+
+# index_handler.py
+import os, logging
+from pathlib import Path
+from dotenv import load_dotenv
+
+import openai
+from llama_index import (
+    VectorStoreIndex,
+    SimpleDirectoryReader,
+    GPTVectorStoreIndex,
+    StorageContext,
+    load_index_from_storage,
+    PromptHelper,
+    LLMPredictor,
+    ServiceContext,
+)
+from langchain.chat_models import ChatOpenAI
+
+
+# Set base directory and load environment variables -- IT is must
+BASE_DIR = Path(__file__).resolve().parent
+dotenv_path = os.path.join(BASE_DIR, ".env")
+load_dotenv(dotenv_path)
+openai.api_key = os.environ["OPENAI_API_KEY"]
+
+
+def process_initializers():  # only initialize variables
+    # Configuration parameters
+    max_input_size = 4096
+    num_outputs = 512
+    max_chunk_overlap = 20
+    chunk_size_limit = 600
+    logging.info("Inside process_initializers")
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+
+    try:
+        # Initialize prompt_helper and ChatOpenAI
+        prompt_helper = PromptHelper(
+            max_input_size,
+            num_outputs,
+            chunk_overlap_ratio=0.2,
+            chunk_size_limit=chunk_size_limit,
+        )
+        # llm = ChatOpenAI(
+        #     openai_api_key=openai_api_key, temperature=0.3, model_name="gpt-4"
+        # )
+        llm = ChatOpenAI(
+            openai_api_key=openai_api_key,
+            temperature=0,
+            # model_name="gpt-3.5-turbo",
+            model_name="gpt-3.5-turbo-0613",
+            request_timeout=20,
+            max_retries=2,
+            max_tokens=500,  # max token to generate
+            # model_kwargs={"stop": "\n"},
+            # model_kwargs={"messages": last_chats},
+        )
+        # llm = OpenAI(api_key=openai_api_key,temperature=0,model="gpt-3.5-turbo-0613",\
+        #              additional_kwargs={"request_timeout":12},max_retries=2)
+
+        llm_predictor = LLMPredictor(llm=llm)
+        service_context = ServiceContext.from_defaults(
+            llm_predictor=llm_predictor, prompt_helper=prompt_helper
+        )
+        return service_context
+    except Exception as e:
+        logging.error(str(e))
+        raise
+
+
+async def store_index():
+    try:
+        # get the current working directory
+        cwd = os.getcwd()
+        # define the relative path to the index_repo folder
+        file_repo_path = os.path.join(cwd, "file_repo")
+        index_repo_path = os.path.join(cwd, "index_repo")
+        service_context = process_initializers()  # calling method
+
+        documents = SimpleDirectoryReader(file_repo_path).load_data()
+        index = GPTVectorStoreIndex.from_documents(
+            documents=documents, service_context=service_context
+        )
+        # index = VectorStoreIndex.from_documents(documents)
+        index.storage_context.persist(persist_dir=index_repo_path)
+    except Exception as e:
+        logging.error(str(e))
+        raise
+
+
+def load_index():
+    try:
+        # get the current working directory
+        cwd = os.getcwd()
+        # define the relative path to the index_repo folder
+        index_repo_path = os.path.join(cwd, "index_repo")
+        # rebuild storage context
+        storage_context = StorageContext.from_defaults(persist_dir=index_repo_path)
+        service_context = process_initializers()  # calling method
+
+        # load index
+        index = load_index_from_storage(
+            storage_context=storage_context, service_context=service_context
+        )
+        return index
+    except Exception as e:
+        logging.error(str(e))
+        raise
+chat_engine.py
+
+import logging
+from index_handler import load_index
+from llama_index.memory import ChatMemoryBuffer
+import asyncio
+
+
+"""
+Method for loading the index file and initializing the chat_engine with memory
+"""
+
+# TODO remove later not using
+async def get_chat_engine(chat_app):
+    logging.info(" Inside method get_chat_engine ")
+    global memory, system_prompt
+    if not hasattr(chat_app, "chat_engine"):
+        index = load_index()  # Load your index using your custom function
+        memory = ChatMemoryBuffer.from_defaults(token_limit=1500)
+        memory.reset()
+        chat_engine = index.as_chat_engine(
+            chat_mode="context",
+            memory=memory,
+            system_prompt="You are a virtual office assistant of Botswana Government who should respond to \
+                user queries with a friendly language, who should engage in small talk, who should be empathetic,\
+                      who can provide clear and helpful responses, who should offer compliments on positive feedback.\
+                        Please provide answers and information \
+                                based only on the content within those documents.\
+                            \nWhen question outside context asked decline with a message:\
+                                    \nYour query is outside my purview,Please contact ********",
+        )
+        chat_app.chat_engine = chat_engine  # Store chat_engine in the app context
